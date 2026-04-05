@@ -1,0 +1,9 @@
+build/
+.vs/
+out/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.user
+*.VC.db

@@ -1,0 +1,17 @@
+{
+  "name": "local-face-filter-native",
+  "version-string": "0.1.0",
+  "builtin-baseline": "77df67cfff9c12ccfdb52284e07c87c75092f723",
+  "dependencies": [
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": [
+        "highgui",
+        "dshow",
+        "win32ui",
+        "thread"
+      ]
+    }
+  ]
+}
