@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(OpenCV REQUIRED CONFIG COMPONENTS core highgui imgproc objdetect video videoio)
+find_package(OpenCV REQUIRED CONFIG COMPONENTS core highgui imgproc video videoio)
 
 add_executable(local_face_filter
     native/src/main.cpp
@@ -14,7 +14,6 @@ add_executable(local_face_filter
 
 target_compile_definitions(local_face_filter PRIVATE
     NOMINMAX
-    LOCALFACEFILTER_ASSET_DIR="${CMAKE_SOURCE_DIR}/native/assets"
 )
 
 if(MSVC)
@@ -30,7 +29,6 @@ else()
         opencv_core
         opencv_highgui
         opencv_imgproc
-        opencv_objdetect
         opencv_video
         opencv_videoio
     )

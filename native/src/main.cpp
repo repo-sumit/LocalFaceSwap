@@ -1,6 +1,5 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/objdetect.hpp>
 #include <opencv2/video.hpp>
 #include <opencv2/videoio.hpp>
 
@@ -10,7 +9,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
-#include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <numeric>
@@ -117,14 +115,6 @@ private:
     std::uint64_t frameId_ = 0;
 };
 
-std::filesystem::path assetRoot() {
-#ifdef LOCALFACEFILTER_ASSET_DIR
-    return std::filesystem::path(LOCALFACEFILTER_ASSET_DIR);
-#else
-    return std::filesystem::current_path() / "native" / "assets";
-#endif
-}
-
 cv::Rect clampRect(const cv::Rect2f& rect, const cv::Size& bounds) {
     const float x1 = std::clamp(rect.x, 0.0f, static_cast<float>(bounds.width - 1));
     const float y1 = std::clamp(rect.y, 0.0f, static_cast<float>(bounds.height - 1));
@@ -169,45 +159,22 @@ std::vector<cv::Point2f> seedTrackingPoints(const cv::Mat& gray, const cv::Rect&
     return points;
 }
 
-std::optional<cv::Rect2f> detectLargestFace(const cv::Mat& gray, cv::CascadeClassifier& cascade) {
-    const int maxDetectionWidth = 320;
-    const double scale = gray.cols > maxDetectionWidth
-        ? static_cast<double>(maxDetectionWidth) / static_cast<double>(gray.cols)
-        : 1.0;
+cv::Rect2f makeGuideBox(const cv::Size& frameSize) {
+    const float width = static_cast<float>(frameSize.width) * 0.34f;
+    const float height = static_cast<float>(frameSize.height) * 0.48f;
+    const float x = (static_cast<float>(frameSize.width) - width) * 0.5f;
+    const float y = (static_cast<float>(frameSize.height) - height) * 0.22f;
+    return {x, y, width, height};
+}
 
-    cv::Mat resized;
-    if (scale < 0.999) {
-        cv::resize(gray, resized, cv::Size(), scale, scale, cv::INTER_AREA);
-    } else {
-        resized = gray;
-    }
-
-    std::vector<cv::Rect> faces;
-    cascade.detectMultiScale(
-        resized,
-        faces,
-        1.1,
-        3,
-        cv::CASCADE_SCALE_IMAGE,
-        cv::Size(60, 60)
-    );
-
-    if (faces.empty()) {
-        return std::nullopt;
-    }
-
-    const auto best = std::max_element(faces.begin(), faces.end(), [](const cv::Rect& a, const cv::Rect& b) {
-        return a.area() < b.area();
-    });
-
-    cv::Rect2f face = *best;
-    if (scale < 0.999) {
-        face.x /= static_cast<float>(scale);
-        face.y /= static_cast<float>(scale);
-        face.width /= static_cast<float>(scale);
-        face.height /= static_cast<float>(scale);
-    }
-    return face;
+bool lockFaceFromGuide(const cv::Mat& gray, FaceTrackState& state, const cv::Rect2f& guideBox) {
+    state.box = clampRect(guideBox, gray.size());
+    state.smoothedBox = state.box;
+    state.points = seedTrackingPoints(gray, state.box);
+    state.previousGray = gray.clone();
+    state.framesSinceDetection = 0;
+    state.hasFace = state.points.size() >= 8;
+    return state.hasFace;
 }
 
 bool updateTrackedFace(const cv::Mat& previousGray, const cv::Mat& gray, FaceTrackState& state) {
@@ -477,13 +444,6 @@ int main(int argc, char** argv) {
 
     const AppConfig config = parseArgs(argc, argv);
 
-    const std::filesystem::path cascadePath = assetRoot() / "cascades" / "haarcascade_frontalface_default.xml";
-    cv::CascadeClassifier faceCascade;
-    if (!faceCascade.load(cascadePath.string())) {
-        std::cerr << "Failed to load cascade: " << cascadePath << '\n';
-        return 1;
-    }
-
     FrameGrabber grabber;
     if (!grabber.open(config)) {
         std::cerr << "Failed to open camera.\n";
@@ -498,8 +458,7 @@ int main(int argc, char** argv) {
     auto previousFrameTime = Clock::now();
 
     std::cout << "Native lightweight filter running.\n";
-    std::cout << "Keys: q = quit, 1 = hat, 2 = glasses, d = debug overlay\n";
-    std::cout << "Cascade: " << cascadePath << '\n';
+    std::cout << "Keys: q = quit, space = lock face, c = clear lock, 1 = hat, 2 = glasses, d = debug overlay\n";
 
     AppConfig runtimeConfig = config;
 
@@ -519,37 +478,48 @@ int main(int argc, char** argv) {
         cv::Mat gray;
         cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
         cv::equalizeHist(gray, gray);
+        const cv::Rect2f guideBox = makeGuideBox(frame.size());
 
         bool tracked = false;
         if (trackState.hasFace && trackState.framesSinceDetection < runtimeConfig.detectInterval) {
             tracked = updateTrackedFace(trackState.previousGray, gray, trackState);
         }
 
-        if (!tracked) {
-            const auto detectedFace = detectLargestFace(gray, faceCascade);
-            if (detectedFace.has_value()) {
-                trackState.hasFace = true;
-                trackState.box = *detectedFace;
-                if (trackState.smoothedBox.width <= 1.0f || trackState.smoothedBox.height <= 1.0f) {
-                    trackState.smoothedBox = *detectedFace;
-                } else {
-                    trackState.smoothedBox = smoothRect(trackState.smoothedBox, *detectedFace, 0.35f);
-                }
-                trackState.points = seedTrackingPoints(gray, clampRect(*detectedFace, gray.size()));
-                trackState.framesSinceDetection = 0;
-            } else {
-                trackState.hasFace = false;
-                trackState.points.clear();
-            }
-        } else {
+        if (tracked) {
             trackState.smoothedBox = smoothRect(trackState.smoothedBox, trackState.box, 0.22f);
             ++trackState.framesSinceDetection;
+        } else if (trackState.hasFace) {
+            trackState.hasFace = false;
+            trackState.points.clear();
         }
 
         trackState.previousGray = gray;
 
         if (trackState.hasFace) {
             applyOverlay(frame, runtimeConfig, trackState.smoothedBox);
+        } else {
+            const cv::Rect guideRect = clampRect(guideBox, frame.size());
+            cv::rectangle(frame, guideRect, cv::Scalar(60, 220, 255), 2, cv::LINE_AA);
+            cv::putText(
+                frame,
+                "Center face and press SPACE",
+                cv::Point(guideRect.x, std::max(30, guideRect.y - 12)),
+                cv::FONT_HERSHEY_SIMPLEX,
+                0.65,
+                cv::Scalar(30, 30, 30),
+                3,
+                cv::LINE_AA
+            );
+            cv::putText(
+                frame,
+                "Center face and press SPACE",
+                cv::Point(guideRect.x, std::max(30, guideRect.y - 12)),
+                cv::FONT_HERSHEY_SIMPLEX,
+                0.65,
+                cv::Scalar(245, 245, 245),
+                1,
+                cv::LINE_AA
+            );
         }
 
         const auto now = Clock::now();
@@ -609,6 +579,14 @@ int main(int argc, char** argv) {
         const int key = cv::waitKey(1) & 0xFF;
         if (key == 'q' || key == 27) {
             break;
+        }
+        if (key == ' ') {
+            if (!lockFaceFromGuide(gray, trackState, guideBox)) {
+                std::cout << "Face lock failed. Move closer or improve lighting, then try again.\n";
+            }
+        }
+        if (key == 'c') {
+            trackState = FaceTrackState{};
         }
         if (key == '1') {
             runtimeConfig.overlay = "hat";
