@@ -1,6 +1,10 @@
 param(
     [switch]$Run,
-    [string]$ExecutionProvider = "auto"
+    [string]$ExecutionProvider = "auto",
+    [switch]$VirtualCamera,
+    [ValidateSet("auto", "obs", "unitycapture")]
+    [string]$VirtualCameraBackend = "auto",
+    [switch]$NoPreview
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,5 +29,19 @@ Write-Host "Installing Python dependencies..."
 & $venvPython -m pip install -r .\python\requirements.txt
 
 if ($Run) {
-    & $venvPython .\python\live_face_swap.py --execution-provider=$ExecutionProvider
+    $runArgs = @(
+        ".\python\live_face_swap.py",
+        "--execution-provider=$ExecutionProvider"
+    )
+
+    if ($VirtualCamera) {
+        $runArgs += "--virtual-camera"
+        $runArgs += "--virtual-camera-backend=$VirtualCameraBackend"
+    }
+
+    if ($NoPreview) {
+        $runArgs += "--no-preview"
+    }
+
+    & $venvPython @runArgs
 }

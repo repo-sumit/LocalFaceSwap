@@ -16,6 +16,11 @@ import onnxruntime
 from insightface.app import FaceAnalysis
 from insightface.model_zoo import get_model
 
+try:
+    import pyvirtualcam
+except ImportError:
+    pyvirtualcam = None
+
 
 MODEL_URL = "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128.onnx"
 MODEL_NAME = "inswapper_128.onnx"
@@ -229,6 +234,51 @@ class InsightFaceEngine:
         return blended, swapped_count
 
 
+class VirtualCameraOutput:
+    def __init__(self, fps: int, backend: str, device: Optional[str]) -> None:
+        self.fps = fps
+        self.backend = backend
+        self.device = device
+        self.camera: Optional[Any] = None
+        self.device_name = ""
+
+    def send(self, frame: np.ndarray) -> None:
+        if self.camera is None:
+            self._open(frame)
+        assert self.camera is not None
+        self.camera.send(frame)
+
+    def close(self) -> None:
+        if self.camera is not None:
+            self.camera.close()
+            self.camera = None
+
+    def _open(self, frame: np.ndarray) -> None:
+        if pyvirtualcam is None:
+            raise RuntimeError(
+                "pyvirtualcam is not installed. Re-run setup-python.ps1 to install virtual camera support."
+            )
+
+        backend = None if self.backend == "auto" else self.backend
+        try:
+            self.camera = pyvirtualcam.Camera(
+                width=int(frame.shape[1]),
+                height=int(frame.shape[0]),
+                fps=float(self.fps),
+                fmt=pyvirtualcam.PixelFormat.BGR,
+                device=self.device,
+                backend=backend,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to open a virtual camera. Install OBS Studio or Unity Capture first, then select the "
+                f"virtual camera in Google Meet. Backend={self.backend} Device={self.device or 'auto'} Error: {exc}"
+            ) from exc
+
+        self.device_name = self.camera.device
+        print(f"[python-swap] Virtual camera ready: {self.device_name}")
+
+
 @dataclass
 class SourceState:
     path: Optional[Path] = None
@@ -253,6 +303,11 @@ class LiveFaceSwapApp:
         self.last_processed_frame_id = -1
         self.fps_estimate = 0.0
         self.previous_frame_time = time.perf_counter()
+        self.virtual_camera = (
+            VirtualCameraOutput(args.fps, args.virtual_camera_backend, args.virtual_camera_device)
+            if args.virtual_camera
+            else None
+        )
 
     def refresh_source_image(self, force: bool = False) -> None:
         latest = find_latest_upload_image(self.uploads_dir)
@@ -286,7 +341,10 @@ class LiveFaceSwapApp:
 
         print(f"[python-swap] Watching uploads folder: {self.uploads_dir}")
         print(f"[python-swap] Execution provider: {', '.join(self.providers)}")
-        print("[python-swap] Keys: q quit | r rescan uploads | m mirror toggle")
+        if self.args.preview:
+            print("[python-swap] Keys: q quit | r rescan uploads | m preview mirror toggle")
+        else:
+            print("[python-swap] Running without a local preview window. Press Ctrl+C to stop.")
 
         self.grabber.start()
         try:
@@ -302,15 +360,12 @@ class LiveFaceSwapApp:
                     continue
                 self.last_processed_frame_id = frame_id
 
-                if self.args.mirror:
-                    frame = cv2.flip(frame, 1)
-
-                display = frame
+                output_frame = frame
                 swapped_count = 0
                 if self.source_state.face is not None:
                     try:
-                        display, swapped_count = self.engine.swap_frame(
-                            frame,
+                        output_frame, swapped_count = self.engine.swap_frame(
+                            output_frame,
                             self.source_state.face,
                             self.args.swap_all_faces,
                             self.args.opacity,
@@ -320,6 +375,13 @@ class LiveFaceSwapApp:
                 else:
                     self.source_state.status = self.source_state.status or "Drop a JPG/PNG into uploads/ to start."
 
+                if self.virtual_camera is not None:
+                    try:
+                        self.virtual_camera.send(output_frame)
+                    except Exception as exc:
+                        print(f"[python-swap] Virtual camera output failed: {exc}")
+                        return 1
+
                 current_time = time.perf_counter()
                 seconds = current_time - self.previous_frame_time
                 self.previous_frame_time = current_time
@@ -327,18 +389,22 @@ class LiveFaceSwapApp:
                     instant_fps = 1.0 / seconds
                     self.fps_estimate = instant_fps if self.fps_estimate <= 0 else (self.fps_estimate * 0.90) + (instant_fps * 0.10)
 
-                self.draw_hud(display, swapped_count)
-                cv2.imshow(WINDOW_NAME, display)
+                if self.args.preview:
+                    display = cv2.flip(output_frame, 1) if self.args.mirror else output_frame
+                    self.draw_hud(display, swapped_count)
+                    cv2.imshow(WINDOW_NAME, display)
 
-                key = cv2.waitKey(1) & 0xFF
-                if key in (ord("q"), 27):
-                    break
-                if key == ord("r"):
-                    self.refresh_source_image(force=True)
-                if key == ord("m"):
-                    self.args.mirror = not self.args.mirror
+                    key = cv2.waitKey(1) & 0xFF
+                    if key in (ord("q"), 27):
+                        break
+                    if key == ord("r"):
+                        self.refresh_source_image(force=True)
+                    if key == ord("m"):
+                        self.args.mirror = not self.args.mirror
         finally:
             self.grabber.stop()
+            if self.virtual_camera is not None:
+                self.virtual_camera.close()
             cv2.destroyAllWindows()
         return 0
 
@@ -348,10 +414,16 @@ class LiveFaceSwapApp:
         stats = f"fps {int(round(self.fps_estimate))}  provider {self.provider_label}"
         if self.source_state.path is not None:
             stats += f"  img {self.source_state.path.name}"
+        if self.virtual_camera is not None:
+            stats += "  vcam on"
         draw_outlined_text(frame, stats, (16, 54), 0.55)
 
         mode = "all-faces" if self.args.swap_all_faces else "single-face"
-        tune = f"mode {mode}  opacity {int(round(self.args.opacity * 100))}%  mirror {'on' if self.args.mirror else 'off'}"
+        tune = (
+            f"mode {mode}  opacity {int(round(self.args.opacity * 100))}%"
+            f"  preview {'on' if self.args.preview else 'off'}"
+            f"  mirror {'on' if self.args.mirror else 'off'}"
+        )
         draw_outlined_text(frame, tune, (16, 80), 0.5)
 
         if self.source_state.face is None:
@@ -380,12 +452,24 @@ def parse_args() -> argparse.Namespace:
         help="ONNX Runtime execution provider preference.",
     )
     parser.add_argument("--backend", default="dshow" if os.name == "nt" else "any", choices=["dshow", "any"], help="Camera backend.")
-    parser.add_argument("--mirror", dest="mirror", action="store_true", default=True, help="Mirror the webcam preview.")
-    parser.add_argument("--no-mirror", dest="mirror", action="store_false", help="Disable webcam mirroring.")
+    parser.add_argument("--mirror", dest="mirror", action="store_true", default=True, help="Mirror the local preview window.")
+    parser.add_argument("--no-mirror", dest="mirror", action="store_false", help="Disable local preview mirroring.")
+    parser.add_argument("--preview", dest="preview", action="store_true", default=True, help="Show the local preview window.")
+    parser.add_argument("--no-preview", dest="preview", action="store_false", help="Run in the background without a local preview window.")
+    parser.add_argument("--virtual-camera", action="store_true", help="Publish the swapped output to a virtual camera for apps like Google Meet.")
+    parser.add_argument(
+        "--virtual-camera-backend",
+        default="auto",
+        choices=["auto", "obs", "unitycapture"],
+        help="Preferred Windows virtual camera backend.",
+    )
+    parser.add_argument("--virtual-camera-device", default=None, help="Exact virtual camera device name, if you want to force one.")
     parser.add_argument("--swap-all-faces", action="store_true", help="Swap every detected face instead of only the main face.")
     parser.add_argument("--opacity", type=float, default=1.0, help="Blend swapped face with original frame, from 0.0 to 1.0.")
     args = parser.parse_args()
     args.opacity = max(0.0, min(1.0, args.opacity))
+    if not args.preview and not args.virtual_camera:
+        parser.error("--no-preview only makes sense together with --virtual-camera.")
     return args
 
 

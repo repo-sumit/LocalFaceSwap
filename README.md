@@ -48,6 +48,9 @@ Useful options:
 - `--execution-provider=auto|cpu|cuda|directml`
 - `--camera=0`
 - `--width=640 --height=480`
+- `--virtual-camera`
+- `--virtual-camera-backend=auto|obs|unitycapture`
+- `--no-preview`
 - `--swap-all-faces`
 - `--no-mirror`
 
@@ -56,6 +59,36 @@ Runtime keys:
 - `q` quit
 - `r` rescan `uploads/` immediately
 - `m` toggle mirror
+
+### Use In Google Meet
+
+If you want the swapped face to appear in Google Meet, Zoom, or another webcam app, do not open your real camera in both apps at the same time. Instead:
+
+1. Install a Windows virtual camera backend first.
+2. Run the Python app with virtual camera output enabled.
+3. In Google Meet, choose the virtual camera as your camera source.
+
+The simplest Windows option is OBS Studio, because it includes `OBS Virtual Camera`.
+
+Run with a local preview window:
+
+```powershell
+.\setup-python.ps1 -Run -VirtualCamera
+```
+
+Run in background mode without the preview window:
+
+```powershell
+.\setup-python.ps1 -Run -VirtualCamera -NoPreview
+```
+
+Manual command:
+
+```powershell
+.\.venv\Scripts\python.exe .\python\live_face_swap.py --virtual-camera --virtual-camera-backend=auto --no-preview
+```
+
+Then open Google Meet and select `OBS Virtual Camera` or your Unity Capture device instead of the physical webcam.
 
 ## Native C++ Lightweight
 
