@@ -4,7 +4,6 @@ out/
 .venv/
 __pycache__/
 models/
-run_*.txt
 *.obj
 *.pdb
 *.ilk
