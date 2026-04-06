@@ -121,8 +121,8 @@ class FrameGrabber:
     def __init__(self, camera_index: int, backend: str, width: int, height: int, fps: int) -> None:
         self.camera_index = camera_index
         self.backend = backend
-        self.width = width
-        self.height = height
+        self.width = width    # 0 = let camera decide
+        self.height = height  # 0 = let camera decide
         self.fps = fps
         self.capture: Optional[cv2.VideoCapture] = None
         self.running = False
@@ -147,11 +147,18 @@ class FrameGrabber:
         if self.capture is None or not self.capture.isOpened():
             return False
 
-        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        if self.width > 0:
+            self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        if self.height > 0:
+            self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self.capture.set(cv2.CAP_PROP_FPS, self.fps)
         if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
             self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        # Read back the resolution the camera actually accepted
+        self.width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(f"[python-swap] Camera resolution: {self.width}x{self.height}")
         return True
 
     def start(self) -> None:
@@ -441,8 +448,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local folder-based live face swap with InsightFace.")
     parser.add_argument("--uploads-dir", default="uploads", help="Folder watched for JPG/PNG source images.")
     parser.add_argument("--camera", type=int, default=0, help="Camera index.")
-    parser.add_argument("--width", type=int, default=640, help="Capture width.")
-    parser.add_argument("--height", type=int, default=480, help="Capture height.")
+    parser.add_argument("--width", type=int, default=0, help="Capture width (0 = use camera native resolution).")
+    parser.add_argument("--height", type=int, default=0, help="Capture height (0 = use camera native resolution).")
     parser.add_argument("--fps", type=int, default=30, help="Requested camera FPS.")
     parser.add_argument("--det-size", type=int, default=640, help="Face detector input size.")
     parser.add_argument(
